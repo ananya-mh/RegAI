@@ -2,6 +2,9 @@ import "dotenv/config";
 import http from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { registerPrompts } from "./prompts/index.js";
+import { registerResources } from "./resources/index.js";
+import { registerTools } from "./tools/index.js";
 
 const PORT = parseInt(process.env["MCP_SERVER_PORT"] ?? "3000", 10);
 
@@ -10,7 +13,9 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
-// Tools, resources, and prompts will be registered here in subsequent steps.
+registerTools(server);
+registerResources(server);
+registerPrompts(server);
 
 const httpServer = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
