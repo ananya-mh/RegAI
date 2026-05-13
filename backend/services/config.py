@@ -14,5 +14,14 @@ class Settings(BaseSettings):
     chroma_port: int = 8001
     chroma_persist_path: str = "./backend/rag/indexes/chroma"
 
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3:8b"
+    llm_max_retries: int = 1
+    llm_timeout_seconds: int = 60
+
+    mcp_server_url: str = "http://localhost:3000"
+
 
 settings = Settings()
