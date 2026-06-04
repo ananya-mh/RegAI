@@ -8,13 +8,14 @@ from langgraph.graph import END, StateGraph
 from backend.agents.schemas import AgentState, Intent
 from backend.agents.gap_analyzer import analyze_gaps
 from backend.agents.interpreter import interpret_requirements
+from backend.agents.remediation_planner import plan_remediation
+from backend.agents.report_writer import write_report
 from backend.agents.supervisor import classify_intent
 
 logger = logging.getLogger(__name__)
 
 
 def _route_after_supervisor(state: AgentState) -> str:
-    """Conditional edge: route based on classified intent."""
     if state.error:
         return "respond"
 
@@ -36,19 +37,45 @@ def _route_after_supervisor(state: AgentState) -> str:
 
 
 def _route_after_interpreter(state: AgentState) -> str:
-    """Conditional edge: route after interpretation completes."""
     if state.error:
         return "respond"
 
     match state.intent:
         case Intent.COMPLIANCE_CHECK | Intent.GAP_ANALYSIS:
             return "gap_analyzer"
+        case Intent.REPORT_GENERATION:
+            return "gap_analyzer"
+        case _:
+            return "respond"
+
+
+def _route_after_gap_analyzer(state: AgentState) -> str:
+    if state.error:
+        return "respond"
+
+    match state.intent:
+        case Intent.COMPLIANCE_CHECK | Intent.GAP_ANALYSIS:
+            return "remediation_planner"
+        case Intent.REPORT_GENERATION:
+            return "remediation_planner"
+        case _:
+            return "respond"
+
+
+def _route_after_remediation(state: AgentState) -> str:
+    if state.error:
+        return "respond"
+
+    match state.intent:
+        case Intent.REPORT_GENERATION:
+            return "report_writer"
+        case Intent.COMPLIANCE_CHECK | Intent.GAP_ANALYSIS:
+            return "report_writer"
         case _:
             return "respond"
 
 
 async def _respond(state: AgentState) -> AgentState:
-    """Terminal node: ensures there is a response to return."""
     if state.response:
         return state
 
@@ -68,31 +95,21 @@ async def _respond(state: AgentState) -> AgentState:
         state.response = "\n\n---\n\n".join(parts)
         return state
 
-    if state.gap_assessments:
-        parts = []
-        for gap in state.gap_assessments:
-            parts.append(
-                f"**{gap.requirement_id}** → {gap.status} "
-                f"(confidence: {gap.confidence_score:.0%})\n{gap.explanation}"
-            )
-        state.response = "\n\n".join(parts)
-        return state
-
     state.response = "I can help with regulatory compliance questions. Try asking about a specific regulation (e.g., 'What does GDPR Article 17 require?') or request a gap analysis."
     return state
 
 
 def build_graph() -> StateGraph:
-    """Build the compliance agent StateGraph.
-
-    Flow: supervisor → interpreter → gap_analyzer → respond
-    With conditional edges at each step.
+    """Full compliance agent pipeline:
+    Supervisor → Interpreter → Gap Analyzer → Remediation Planner → Report Writer → Respond
     """
     graph = StateGraph(AgentState)
 
     graph.add_node("supervisor", classify_intent)
     graph.add_node("interpreter", interpret_requirements)
     graph.add_node("gap_analyzer", analyze_gaps)
+    graph.add_node("remediation_planner", plan_remediation)
+    graph.add_node("report_writer", write_report)
     graph.add_node("respond", _respond)
 
     graph.set_entry_point("supervisor")
@@ -107,7 +124,17 @@ def build_graph() -> StateGraph:
         "respond": "respond",
     })
 
-    graph.add_edge("gap_analyzer", "respond")
+    graph.add_conditional_edges("gap_analyzer", _route_after_gap_analyzer, {
+        "remediation_planner": "remediation_planner",
+        "respond": "respond",
+    })
+
+    graph.add_conditional_edges("remediation_planner", _route_after_remediation, {
+        "report_writer": "report_writer",
+        "respond": "respond",
+    })
+
+    graph.add_edge("report_writer", "respond")
     graph.add_edge("respond", END)
 
     return graph
@@ -124,7 +151,6 @@ def get_graph() -> Any:
 
 
 async def run_query(query: str) -> AgentState:
-    """Run a user query through the full agent pipeline."""
     graph = get_graph()
     initial_state = AgentState(query=query)
     result = await graph.ainvoke(initial_state)

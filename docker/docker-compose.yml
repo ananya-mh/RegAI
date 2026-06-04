@@ -17,6 +17,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - regai
 
   chroma:
     image: chromadb/chroma:latest
@@ -31,6 +33,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    networks:
+      - regai
 
   ollama:
     image: ollama/ollama:latest
@@ -45,6 +49,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    networks:
+      - regai
 
   # ─── Application services ─────────────────────────────────────────────────
   api:
@@ -57,15 +63,19 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
       OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3:8b}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-complianceforge}
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
-      FAISS_INDEX_PATH: /app/backend/rag/indexes/faiss
+      FAISS_INDEX_PATH: /app/data/faiss
       MCP_SERVER_URL: http://mcp-server:3000
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-1}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
     volumes:
-      - faiss_indexes:/app/backend/rag/indexes
+      - faiss_indexes:/app/data/faiss
     ports:
       - "8000:8000"
     depends_on:
@@ -73,12 +83,18 @@ services:
         condition: service_healthy
       chroma:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
+      mcp-server:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
+    networks:
+      - regai
 
   mcp-server:
     build:
@@ -87,6 +103,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_SYNC_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-complianceforge}
+      API_BASE_URL: http://api:8000
       MCP_SERVER_PORT: 3000
       NODE_ENV: production
     ports:
@@ -95,11 +112,13 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 15s
+    networks:
+      - regai
 
   frontend:
     build:
@@ -112,19 +131,25 @@ services:
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3001}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-in-production}
     ports:
-      - "3001:3000"
+      - "3001:3001"
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:3001/ || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - regai
 
 volumes:
   postgres_data:
   chroma_data:
   ollama_data:
   faiss_indexes:
+
+networks:
+  regai:
+    driver: bridge
