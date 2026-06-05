@@ -156,10 +156,6 @@ pytest tests/integration/ -v
 pytest tests/unit/test_schemas.py tests/unit/test_llm_service.py tests/unit/test_mcp_client.py -v
 ```
 
-## License
-
-MIT License. See [LICENSE](LICENSE).
-
 ---
 
 *AI-generated compliance assessments are for informational purposes only and do not constitute legal advice.*
