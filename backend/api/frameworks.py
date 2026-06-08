@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,7 @@ from backend.api.models import FrameworkOut, FrameworkStatusOut
 from backend.models.tables import Framework, Gap, GapStatus, Requirement
 from backend.services.database import get_db
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/frameworks", tags=["frameworks"])
 
 
@@ -20,6 +22,26 @@ async def list_frameworks(
     result = await db.execute(select(Framework).order_by(Framework.name))
     frameworks = result.scalars().all()
     return [FrameworkOut.model_validate(f) for f in frameworks]
+
+
+@router.post("/ingest/{name}")
+async def ingest_framework(
+    name: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Ingest a regulatory framework by name (gdpr, soc2)."""
+    name_lower = name.lower()
+    if name_lower == "gdpr":
+        from backend.ingestion import ingest_gdpr
+        framework_id = await ingest_gdpr(db)
+    elif name_lower == "soc2":
+        from backend.ingestion import ingest_soc2
+        raise HTTPException(400, "SOC 2 ingestion requires a PDF upload — use /api/policies/upload")
+    else:
+        raise HTTPException(400, f"Unknown framework: {name}. Supported: gdpr, soc2")
+
+    logger.info("Ingested framework %s: %s", name, framework_id)
+    return {"status": "ok", "framework_id": str(framework_id)}
 
 
 @router.get("/{framework_id}/status", response_model=FrameworkStatusOut)

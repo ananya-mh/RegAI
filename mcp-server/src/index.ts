@@ -17,6 +17,8 @@ registerTools(server);
 registerResources(server);
 registerPrompts(server);
 
+const sessions = new Map<string, StreamableHTTPServerTransport>();
+
 const httpServer = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -24,12 +26,35 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  const body = await readBody(req);
+
+  if (sessionId && sessions.has(sessionId)) {
+    const transport = sessions.get(sessionId)!;
+    await transport.handleRequest(req, res, body);
+    return;
+  }
+
+  if (sessionId && !sessions.has(sessionId)) {
+    res.writeHead(406, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Unknown session" }));
+    return;
+  }
+
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
   });
 
+  transport.onclose = () => {
+    const id = [...sessions.entries()].find(([, t]) => t === transport)?.[0];
+    if (id) sessions.delete(id);
+  };
+
   await server.connect(transport);
-  await transport.handleRequest(req, res, await readBody(req));
+  await transport.handleRequest(req, res, body);
+
+  const newId = res.getHeader("mcp-session-id") as string | undefined;
+  if (newId) sessions.set(newId, transport);
 });
 
 function readBody(req: http.IncomingMessage): Promise<Buffer> {

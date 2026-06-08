@@ -20,13 +20,14 @@ if [ ! -f .env ]; then
 
     VM_IP=$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip -H "Metadata-Flavor: Google" 2>/dev/null || echo "")
 
-    if [ -n "$VM_IP" ]; then
-        echo "Detected external IP: $VM_IP"
-        echo "NEXT_PUBLIC_API_URL=http://${VM_IP}:8000" >> .env
-    else
+    if [ -z "$VM_IP" ]; then
         read -p "Enter VM external IP: " VM_IP
-        echo "NEXT_PUBLIC_API_URL=http://${VM_IP}:8000" >> .env
     fi
+
+    echo "Using external IP: $VM_IP"
+    sed -i "s|NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=http://${VM_IP}:8000|" .env
+    sed -i "s|NEXT_PUBLIC_MCP_SERVER_URL=.*|NEXT_PUBLIC_MCP_SERVER_URL=http://${VM_IP}:3000|" .env
+    sed -i "s|NEXTAUTH_URL=.*|NEXTAUTH_URL=http://${VM_IP}:3001|" .env
 
     echo ""
     echo "Optional: add GEMINI_API_KEY to .env (Ollama works as fallback)"
@@ -37,7 +38,7 @@ fi
 
 # ─── Build and start ────────────────────────────────────────────────────────
 echo "Building and starting services..."
-docker compose -f docker/docker-compose.yml up -d --build
+docker compose -f docker/docker-compose.yml --env-file .env up -d --build
 
 # ─── Wait for services ──────────────────────────────────────────────────────
 echo "Waiting for services to start..."
@@ -45,11 +46,15 @@ sleep 15
 
 # ─── Run database migrations ────────────────────────────────────────────────
 echo "Running database migrations..."
-docker compose -f docker/docker-compose.yml exec -T api alembic upgrade head || echo "Migration failed — retry: docker compose -f docker/docker-compose.yml exec api alembic upgrade head"
+docker compose -f docker/docker-compose.yml --env-file .env exec -T api alembic upgrade head || echo "Migration failed — retry: docker compose -f docker/docker-compose.yml --env-file .env exec api alembic upgrade head"
+
+# ─── Ingest GDPR ───────────────────────────────────────────────────────────
+echo "Ingesting GDPR regulatory text (downloads from EUR-Lex)..."
+curl -s -X POST "http://localhost:8000/api/frameworks/ingest/gdpr" | head -1 || echo "GDPR ingestion failed — retry: curl -X POST http://localhost:8000/api/frameworks/ingest/gdpr"
 
 # ─── Pull Ollama model ──────────────────────────────────────────────────────
 echo "Pulling Llama 3 model (~4.7 GB, takes a few minutes)..."
-docker compose -f docker/docker-compose.yml exec -T ollama ollama pull llama3:8b || echo "Ollama pull failed — retry: docker compose -f docker/docker-compose.yml exec ollama ollama pull llama3:8b"
+docker compose -f docker/docker-compose.yml --env-file .env exec -T ollama ollama pull llama3:8b || echo "Ollama pull failed — retry: docker compose -f docker/docker-compose.yml --env-file .env exec ollama ollama pull llama3:8b"
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 VM_IP=$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip -H "Metadata-Flavor: Google" 2>/dev/null || echo "<VM_IP>")
