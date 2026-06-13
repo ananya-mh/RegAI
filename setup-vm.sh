@@ -37,8 +37,14 @@ if [ ! -f .env ]; then
 fi
 
 # ─── Build and start ────────────────────────────────────────────────────────
-echo "Building and starting services..."
-docker compose -f docker/docker-compose.yml --env-file .env up -d --build
+RUNNING=$(docker compose -f docker/docker-compose.yml ps -q 2>/dev/null | wc -l)
+if [ "$RUNNING" -gt 0 ]; then
+    echo "Containers already running. Starting any stopped services..."
+    docker compose -f docker/docker-compose.yml --env-file .env up -d
+else
+    echo "Building and starting services (first run)..."
+    docker compose -f docker/docker-compose.yml --env-file .env up -d --build
+fi
 
 # ─── Wait for services ──────────────────────────────────────────────────────
 echo "Waiting for services to start..."
@@ -48,13 +54,23 @@ sleep 15
 echo "Running database migrations..."
 docker compose -f docker/docker-compose.yml --env-file .env exec -T api alembic upgrade head || echo "Migration failed — retry: docker compose -f docker/docker-compose.yml --env-file .env exec api alembic upgrade head"
 
-# ─── Ingest GDPR ───────────────────────────────────────────────────────────
-echo "Ingesting GDPR regulatory text (downloads from EUR-Lex)..."
-curl -s -X POST "http://localhost:8000/api/frameworks/ingest/gdpr" | head -1 || echo "GDPR ingestion failed — retry: curl -X POST http://localhost:8000/api/frameworks/ingest/gdpr"
+# ─── Ingest GDPR (skip if already ingested) ────────────────────────────────
+FRAMEWORK_COUNT=$(curl -s http://localhost:8000/api/frameworks | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+if [ "$FRAMEWORK_COUNT" = "0" ]; then
+    echo "Ingesting GDPR regulatory text (downloads from EUR-Lex)..."
+    curl -s -X POST "http://localhost:8000/api/frameworks/ingest/gdpr" | head -1 || echo "GDPR ingestion failed — retry: curl -X POST http://localhost:8000/api/frameworks/ingest/gdpr"
+else
+    echo "Frameworks already ingested ($FRAMEWORK_COUNT found), skipping."
+fi
 
-# ─── Pull Ollama model ──────────────────────────────────────────────────────
-echo "Pulling Llama 3 model (~4.7 GB, takes a few minutes)..."
-docker compose -f docker/docker-compose.yml --env-file .env exec -T ollama ollama pull llama3:8b || echo "Ollama pull failed — retry: docker compose -f docker/docker-compose.yml --env-file .env exec ollama ollama pull llama3:8b"
+# ─── Pull Ollama model (skip if already pulled) ───────────────────────────
+OLLAMA_MODELS=$(docker compose -f docker/docker-compose.yml --env-file .env exec -T ollama ollama list 2>/dev/null || echo "")
+if echo "$OLLAMA_MODELS" | grep -q "llama3:8b"; then
+    echo "Llama 3 8B already pulled, skipping."
+else
+    echo "Pulling Llama 3 model (~4.7 GB, takes a few minutes)..."
+    docker compose -f docker/docker-compose.yml --env-file .env exec -T ollama ollama pull llama3:8b || echo "Ollama pull failed — retry: docker compose -f docker/docker-compose.yml --env-file .env exec ollama ollama pull llama3:8b"
+fi
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 VM_IP=$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip -H "Metadata-Flavor: Google" 2>/dev/null || echo "<VM_IP>")
