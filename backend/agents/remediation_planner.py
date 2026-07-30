@@ -64,7 +64,7 @@ async def plan_remediation(state: AgentState) -> AgentState:
                 prompt=prompt,
                 system_prompt=SYSTEM_PROMPT,
                 temperature=0.3,
-                prefer="ollama",
+                prefer="gemini",
                 agent_name="remediation_planner",
             )
 

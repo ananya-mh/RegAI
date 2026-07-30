@@ -33,7 +33,10 @@ class MCPClient:
             "method": method,
             "params": params or {},
         }
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
 
@@ -55,13 +58,31 @@ class MCPClient:
 
         return data.get("result")
 
+    async def _notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        """Send a JSON-RPC notification (no id, no response expected)."""
+        payload = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(f"{self._base_url}/mcp", json=payload, headers=headers)
+            resp.raise_for_status()
+
+        session = resp.headers.get("Mcp-Session-Id")
+        if session:
+            self._session_id = session
+
     async def initialize(self) -> dict[str, Any]:
         result = await self._rpc("initialize", {
             "protocolVersion": "2025-03-26",
             "capabilities": {},
             "clientInfo": {"name": "regai-backend", "version": "0.1.0"},
         })
-        await self._rpc("notifications/initialized")
+        await self._notify("notifications/initialized")
         return result
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:

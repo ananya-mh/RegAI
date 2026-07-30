@@ -68,7 +68,7 @@ async def classify_intent(state: AgentState) -> AgentState:
             prompt=f"Query: \"{state.query}\"",
             system_prompt=SYSTEM_PROMPT,
             temperature=0.1,
-            prefer="ollama",
+            prefer="gemini",
             agent_name="supervisor",
         )
 

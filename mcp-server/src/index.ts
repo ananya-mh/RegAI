@@ -8,16 +8,18 @@ import { registerTools } from "./tools/index.js";
 
 const PORT = parseInt(process.env["MCP_SERVER_PORT"] ?? "3000", 10);
 
-const server = new McpServer({
-  name: "regai-mcp",
-  version: "0.1.0",
-});
+function createServer(): McpServer {
+  const server = new McpServer({
+    name: "regai-mcp",
+    version: "0.1.0",
+  });
+  registerTools(server);
+  registerResources(server);
+  registerPrompts(server);
+  return server;
+}
 
-registerTools(server);
-registerResources(server);
-registerPrompts(server);
-
-const sessions = new Map<string, StreamableHTTPServerTransport>();
+const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
 
 const httpServer = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
@@ -27,11 +29,19 @@ const httpServer = http.createServer(async (req, res) => {
   }
 
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  const body = await readBody(req);
+  const rawBody = await readBody(req);
+  // The SDK's handleRequest expects a pre-parsed JS object as parsedBody, not a raw Buffer.
+  // Passing a Buffer makes it fail JSON-RPC schema validation with a -32700 parse error.
+  let body: unknown;
+  try {
+    body = rawBody.length ? JSON.parse(rawBody.toString("utf-8")) : undefined;
+  } catch {
+    body = undefined;
+  }
 
   if (sessionId && sessions.has(sessionId)) {
-    const transport = sessions.get(sessionId)!;
-    await transport.handleRequest(req, res, body);
+    const session = sessions.get(sessionId)!;
+    await session.transport.handleRequest(req, res, body);
     return;
   }
 
@@ -43,18 +53,23 @@ const httpServer = http.createServer(async (req, res) => {
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
+    enableJsonResponse: true,
   });
+  const server = createServer();
 
   transport.onclose = () => {
-    const id = [...sessions.entries()].find(([, t]) => t === transport)?.[0];
+    const id = [...sessions.entries()].find(([, s]) => s.transport === transport)?.[0];
     if (id) sessions.delete(id);
   };
 
   await server.connect(transport);
   await transport.handleRequest(req, res, body);
 
-  const newId = res.getHeader("mcp-session-id") as string | undefined;
-  if (newId) sessions.set(newId, transport);
+  // Read the generated session id from the transport itself. The SDK writes the
+  // mcp-session-id response header via its own (Hono) response path, not through
+  // the Node res API, so res.getHeader("mcp-session-id") is undefined here.
+  const newId = transport.sessionId;
+  if (newId) sessions.set(newId, { transport, server });
 });
 
 function readBody(req: http.IncomingMessage): Promise<Buffer> {
