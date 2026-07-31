@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 GEMINI_COST_PER_1K_INPUT = 0.0001
 GEMINI_COST_PER_1K_OUTPUT = 0.0004
+# Groq free tier is $0; keep constants so cost logging stays uniform if a paid tier is used.
+GROQ_COST_PER_1K_INPUT = 0.0
+GROQ_COST_PER_1K_OUTPUT = 0.0
 
 _gemini_client: genai.Client | None = None
 
@@ -76,6 +79,52 @@ async def _call_gemini(
         text=text,
         model=settings.gemini_model,
         provider="google",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        estimated_cost=cost,
+        latency_ms=latency,
+    )
+
+
+async def _call_groq(
+    prompt: str,
+    system_prompt: str | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 4096,
+) -> LLMResponse:
+    messages: list[dict[str, str]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    t0 = time.perf_counter()
+    async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
+        resp = await client.post(
+            f"{settings.groq_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+            json={
+                "model": settings.groq_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+        )
+        resp.raise_for_status()
+    latency = (time.perf_counter() - t0) * 1000
+
+    data = resp.json()
+    text = data["choices"][0]["message"]["content"] or ""
+    usage = data.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", _estimate_tokens(prompt))
+    output_tokens = usage.get("completion_tokens", _estimate_tokens(text))
+    cost = (input_tokens / 1000) * GROQ_COST_PER_1K_INPUT + (
+        output_tokens / 1000
+    ) * GROQ_COST_PER_1K_OUTPUT
+
+    return LLMResponse(
+        text=text,
+        model=settings.groq_model,
+        provider="groq",
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         estimated_cost=cost,
@@ -154,25 +203,38 @@ async def generate(
 ) -> LLMResponse:
     """Unified LLM call with provider routing and fallback.
 
-    prefer="gemini" tries Gemini first, falls back to Ollama.
+    prefer != "ollama" uses the primary reasoning model — Groq first (if a key is
+    set), then Gemini (if a key is set) — and falls back to Ollama on failure.
     prefer="ollama" goes directly to Ollama.
     """
     response: LLMResponse | None = None
 
-    if prefer == "gemini" and settings.gemini_api_key:
-        for attempt in range(1 + settings.llm_max_retries):
-            try:
-                response = await _call_gemini(prompt, system_prompt, temperature, max_tokens)
+    if prefer != "ollama":
+        # Ordered primary providers: Groq (fast, generous free tier), then Gemini.
+        providers: list[tuple[str, Any]] = []
+        if settings.groq_api_key:
+            providers.append(("Groq", _call_groq))
+        if settings.gemini_api_key:
+            providers.append(("Gemini", _call_gemini))
+
+        for name, call in providers:
+            for attempt in range(1 + settings.llm_max_retries):
+                try:
+                    response = await call(prompt, system_prompt, temperature, max_tokens)
+                    break
+                except Exception:
+                    logger.warning(
+                        "%s call failed (attempt %d/%d)",
+                        name,
+                        attempt + 1,
+                        1 + settings.llm_max_retries,
+                        exc_info=True,
+                    )
+            if response is not None:
                 break
-            except Exception:
-                logger.warning(
-                    "Gemini call failed (attempt %d/%d)",
-                    attempt + 1,
-                    1 + settings.llm_max_retries,
-                    exc_info=True,
-                )
-        if response is None:
-            logger.info("Falling back to Ollama after Gemini failure")
+
+        if response is None and providers:
+            logger.info("Falling back to Ollama after primary provider failure")
 
     if response is None:
         response = await _call_ollama(prompt, system_prompt, temperature, max_tokens)
