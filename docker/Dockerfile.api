@@ -37,6 +37,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
+# Pre-download the embedding + reranker models so they are baked into the image.
+# Otherwise the first gap-analysis call downloads ~1.5GB from HuggingFace at
+# runtime, which blows past request timeouts. Kept before the app COPY so code
+# changes don't invalidate this (large, slow) layer.
+RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; SentenceTransformer('BAAI/bge-base-en-v1.5'); CrossEncoder('BAAI/bge-reranker-base')"
+
 WORKDIR /app
 COPY backend/ ./backend/
 COPY pyproject.toml .

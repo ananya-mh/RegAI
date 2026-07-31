@@ -21,7 +21,7 @@ class MCPError(Exception):
 class MCPClient:
     """Lightweight client for the RegAI MCP server (Streamable HTTP / JSON-RPC 2.0)."""
 
-    def __init__(self, base_url: str | None = None, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str | None = None, timeout: float = 180.0) -> None:
         self._base_url = (base_url or settings.mcp_server_url).rstrip("/")
         self._timeout = timeout
         self._session_id: str | None = None
