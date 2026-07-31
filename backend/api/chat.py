@@ -27,6 +27,11 @@ async def _stream_response(query: str):
         yield {"event": "done", "data": "{}"}
         return
 
+    try:
+        await _persist_gaps(result.gap_assessments)
+    except Exception:
+        logger.warning("Failed to persist gap assessments", exc_info=True)
+
     if result.supervisor_decision:
         yield {
             "event": "status",
@@ -82,3 +87,96 @@ async def _stream_response(query: str):
 @router.post("/chat")
 async def chat(request: ChatRequest):
     return EventSourceResponse(_stream_response(request.message))
+
+
+async def _persist_gaps(assessments: list) -> None:
+    """Persist gap assessments produced by the chat pipeline to the gaps table.
+
+    Agents work with reference strings (e.g. "GDPR-Art17"); resolve them to real
+    requirement/policy rows so the /gaps view and dashboard reflect the results.
+    Upserts one gap per (requirement, policy) pair to avoid duplicates on re-runs.
+    """
+    if not assessments:
+        return
+
+    import re
+
+    from sqlalchemy import select
+
+    from backend.models.tables import Framework, Gap, GapStatus, Policy, Requirement
+    from backend.services.database import async_session
+
+    async with async_session() as session:
+        for a in assessments:
+            parts = a.requirement_id.split("-")
+            framework_name = parts[0]
+            article = re.sub(r"^Art", "", "-".join(parts[1:]), flags=re.IGNORECASE) or None
+
+            req_stmt = (
+                select(Requirement)
+                .join(Framework, Requirement.framework_id == Framework.id)
+                .where(Framework.name.ilike(framework_name))
+            )
+            if article:
+                req_stmt = req_stmt.where(Requirement.article == article)
+            requirement = (await session.execute(req_stmt)).scalars().first()
+            if requirement is None:
+                continue
+
+            policy = None
+            ref = (a.policy_id or "").strip()
+            if ref and ref.lower() != "all":
+                policy = (
+                    await session.execute(
+                        select(Policy)
+                        .where(Policy.filename.ilike(f"%{ref}%"))
+                        .order_by(Policy.upload_date.desc())
+                    )
+                ).scalars().first()
+            if policy is None:
+                policy = (
+                    await session.execute(
+                        select(Policy).order_by(Policy.upload_date.desc())
+                    )
+                ).scalars().first()
+            if policy is None:
+                continue
+
+            try:
+                status = GapStatus(a.status)
+            except ValueError:
+                status = GapStatus.NON_COMPLIANT
+
+            evidence = {
+                "regulation_evidence": a.regulation_evidence,
+                "policy_evidence": a.policy_evidence,
+                "citations": a.citations,
+            }
+
+            existing = (
+                await session.execute(
+                    select(Gap).where(
+                        Gap.requirement_id == requirement.id,
+                        Gap.policy_id == policy.id,
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if existing is None:
+                session.add(
+                    Gap(
+                        requirement_id=requirement.id,
+                        policy_id=policy.id,
+                        status=status,
+                        explanation=a.explanation,
+                        evidence=evidence,
+                        confidence_score=a.confidence_score,
+                    )
+                )
+            else:
+                existing.status = status
+                existing.explanation = a.explanation
+                existing.evidence = evidence
+                existing.confidence_score = a.confidence_score
+
+        await session.commit()
