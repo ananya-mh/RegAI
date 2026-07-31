@@ -207,4 +207,55 @@ async def ingest_gdpr(session: AsyncSession, *, html: str | None = None) -> uuid
     await session.commit()
 
     logger.info("Ingested %d GDPR requirements under framework %s", count, framework.id)
+
+    await build_regulatory_index(session, framework.id, "GDPR")
+
     return framework.id
+
+
+async def build_regulatory_index(
+    session: AsyncSession, framework_id: uuid.UUID, framework_name: str
+) -> None:
+    """Build (or rebuild) the FAISS regulatory index from ingested requirements.
+
+    The gap-analysis cross-index retrieval depends on this index; without it,
+    analyze_gap returns no regulatory chunks.
+    """
+    from sqlalchemy import select
+
+    from backend.models.tables import Requirement
+    from backend.rag.chunking import chunk_regulatory
+    from backend.rag.vector_stores import RegulatoryStore
+    from backend.services.config import settings
+
+    result = await session.execute(
+        select(Requirement).where(Requirement.framework_id == framework_id)
+    )
+    requirements = result.scalars().all()
+
+    req_dicts = [
+        {
+            "id": r.id,
+            "framework_id": r.framework_id,
+            "article": r.article,
+            "section": r.section,
+            "clause": r.clause,
+            "full_text": r.full_text,
+            "parent_requirement_id": r.parent_requirement_id,
+        }
+        for r in requirements
+    ]
+
+    chunks = chunk_regulatory(req_dicts, framework_name=framework_name)
+    if not chunks:
+        logger.warning("No regulatory chunks produced for %s; FAISS index not built", framework_name)
+        return
+
+    store = RegulatoryStore(settings.faiss_index_path)
+    store.build(chunks)
+    store.save()
+    logger.info(
+        "Built FAISS regulatory index with %d chunks at %s",
+        len(chunks),
+        settings.faiss_index_path,
+    )

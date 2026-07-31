@@ -44,6 +44,30 @@ async def ingest_framework(
     return {"status": "ok", "framework_id": str(framework_id)}
 
 
+@router.post("/rebuild-index")
+async def rebuild_regulatory_index(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Rebuild the FAISS regulatory index from requirements already in PostgreSQL.
+
+    Use this if requirements were ingested before index-building existed, to avoid
+    re-downloading the source documents.
+    """
+    from backend.ingestion.gdpr import build_regulatory_index
+
+    result = await db.execute(select(Framework))
+    frameworks = result.scalars().all()
+    if not frameworks:
+        raise HTTPException(400, "No frameworks ingested yet")
+
+    built = []
+    for fw in frameworks:
+        await build_regulatory_index(db, fw.id, fw.name)
+        built.append(fw.name)
+
+    return {"status": "ok", "frameworks_indexed": ", ".join(built)}
+
+
 @router.get("/{framework_id}/status", response_model=FrameworkStatusOut)
 async def get_framework_status(
     framework_id: uuid.UUID,
