@@ -65,12 +65,17 @@ services:
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-complianceforge}
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
       FAISS_INDEX_PATH: /app/data/faiss
+      CHROMA_PERSIST_PATH: /app/data/chroma
       MCP_SERVER_URL: http://mcp-server:3000
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-1}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     volumes:
       - faiss_indexes:/app/data/faiss
+      - chroma_policies:/app/data/chroma
     ports:
       - "8000:8000"
     depends_on:
@@ -142,6 +147,7 @@ volumes:
   chroma_data:
   ollama_data:
   faiss_indexes:
+  chroma_policies:
 
 networks:
   regai:
